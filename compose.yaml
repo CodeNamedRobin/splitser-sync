@@ -9,7 +9,7 @@ services:
     volumes:
       - splitser-data:/data
     ports:
-      - "127.0.0.1:8787:8787"
+      - '127.0.0.1:8787:8787'
 
 volumes:
   splitser-data:
