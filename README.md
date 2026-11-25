@@ -31,10 +31,10 @@ Safety checks before and after every write:
 
 ## Prerequisites
 
-- Node.js 22 or newer
+- Node.js 22.18 or newer (24 recommended; see `.nvmrc`) and [pnpm](https://pnpm.io/) (`corepack enable` is enough)
 - A Splitser account (email and password login)
 - An Actual Budget server you can reach, with its budget's **Sync ID** (Settings → Advanced settings → Sync ID)
-- Actual server version matching the pinned API package, currently **26.11.0** (`@actual-app/api` in `package.json`). If your server is on a different version, change that dependency to match and run `npm install`.
+- Actual server version matching the pinned API package, currently **26.11.0** (`@actual-app/api` in `package.json`). If your server is on a different version, change that dependency to match and run `pnpm install`.
 
 ## Getting started
 
@@ -54,7 +54,7 @@ You can use other names; set them in `.env` below.
 git clone https://github.com/JustSamuel/splitser-sync.git
 cd splitser-sync
 cp .env.example .env
-npm ci
+pnpm install
 ```
 
 Edit `.env`. The settings you must fill in:
@@ -78,7 +78,7 @@ Only EUR lists are supported; the tool stops with an error on any other currency
 ### 3. Dry run
 
 ```sh
-npm run reconcile
+pnpm reconcile
 ```
 
 Example output:
@@ -98,7 +98,7 @@ If it can't find your member name, account or category, the error says which one
 ### 4. Apply once
 
 ```sh
-npm run reconcile -- --apply
+pnpm reconcile --apply
 ```
 
 Check Actual: the `Splitser` account should now equal your Splitser balance, `Advances` its negative, and your bank accounts and _To Budget_ unchanged. Re-running is safe; it updates the same adjustment rather than adding new ones.
@@ -129,7 +129,8 @@ It then reconciles at startup and at that interval. Only turn this on after a dr
 ### HTTP API
 
 ```sh
-npm start
+pnpm build
+pnpm start
 curl http://127.0.0.1:8787/health
 curl http://127.0.0.1:8787/lists
 curl http://127.0.0.1:8787/balances
@@ -152,7 +153,7 @@ That is a dry run unless you add `?apply=true` _and_ have set `ALLOW_ACTUAL_WRIT
 
 - `.env`, the cookie file, the Actual cache and `reconciliation.json` are git-ignored and excluded from the Docker build context. Never commit them.
 - Use long random values for `API_TOKEN` and `RECONCILE_TOKEN`, and don't expose the API publicly without a token.
-- Credentials never appear in logs; `npm run lint` fails on code that logs them.
+- Credentials never appear in logs; `pnpm lint` fails on code that logs them.
 
 ## Troubleshooting
 
@@ -166,10 +167,17 @@ That is a dry run unless you add `?apply=true` _and_ have set `ALLOW_ACTUAL_WRIT
 | Login or API errors from Splitser                      | Check credentials; the private API may have changed (`SPLITSER_API_VERSION`)         |
 | Errors opening the budget                              | Check the Sync ID, and that the server version matches the `@actual-app/api` version |
 
-## Development
+## Contributing
 
 ```sh
-npm run check
+pnpm install   # also installs the git hooks
+pnpm check     # typecheck, boundary lint, formatting, tests
 ```
 
-runs syntax checks, strict typechecking, boundary lint, formatting and tests. Tests use fake backends and need no credentials. See [AGENTS.md](AGENTS.md) for the module layout.
+Tests use fake backends and need no credentials. See [AGENTS.md](AGENTS.md) for the module layout.
+
+Every commit must follow [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `docs:`, `chore:` ...). A git hook and CI both enforce this. Pull requests are rebase-merged, so each commit lands on `main` exactly as written and history stays linear.
+
+## License
+
+[MIT](LICENSE)
