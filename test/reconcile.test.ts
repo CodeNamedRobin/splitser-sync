@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { reconcileWithActual } from '../reconcile.js';
+import type { ActualApi } from '../src/reconcile.ts';
+import { reconcileWithActual } from '../src/reconcile.ts';
 
 const source = {
   memberName: 'Member',
@@ -16,10 +17,20 @@ const config = {
   id: () => 'new-id',
 };
 
-function fake({ tracker = 0, mirror = 100, reported = 500, bankResult } = {}) {
-  const calls = [];
+function fake({
+  tracker = 0,
+  mirror = 100,
+  reported = 500,
+  bankResult,
+}: {
+  tracker?: number;
+  mirror?: number;
+  reported?: number;
+  bankResult?: { newTransactions?: unknown[] };
+} = {}) {
+  const calls: unknown[] = [];
   const state = { mirror, tracker, budgeted: 0, reported, lastSync: 'before' };
-  const api = {
+  const api: ActualApi = {
     async getAccounts() {
       return [
         { id: 'mirror', name: 'Mirror', offbudget: true },
@@ -72,7 +83,7 @@ function fake({ tracker = 0, mirror = 100, reported = 500, bankResult } = {}) {
     },
     async addTransactions(account, rows) {
       calls.push(['add', account, rows]);
-      state.mirror += rows[0].amount;
+      state.mirror += rows[0]!.amount as number;
     },
     async updateTransaction() {
       calls.push('update');
@@ -92,7 +103,7 @@ function fake({ tracker = 0, mirror = 100, reported = 500, bankResult } = {}) {
   return { api, calls, state };
 }
 
-const run = (backend, apply = true) =>
+const run = (backend: ReturnType<typeof fake>, apply = true) =>
   reconcileWithActual({ source, apply, api: backend.api, config });
 
 test('dry run performs no bank sync or Actual writes', async () => {
@@ -123,8 +134,8 @@ test('bank sync stops on unbooked imported transactions', async () => {
 test('one adjustment updates account and tracker and syncs after both writes', async () => {
   const backend = fake({ mirror: 90, tracker: -90 });
   const result = await run(backend);
-  assert.equal(result.adjustment.amount, 10);
-  assert.equal(result.trackerBudgetChange.to, -10);
+  assert.equal(result.adjustment!.amount, 10);
+  assert.equal(result.trackerBudgetChange!.to, -10);
   assert.deepEqual(
     backend.calls.map((call) => (Array.isArray(call) ? call[0] : call)),
     ['bank-sync', 'add', 'budget', 'sync'],

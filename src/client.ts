@@ -1,29 +1,99 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import type { SplitserConfig } from './config.ts';
 
 export class SplitserError extends Error {
-  constructor(/** @type {any} */ message, status = 502) {
+  status: number;
+  constructor(message: string, status = 502) {
     super(message);
     this.status = status;
   }
 }
 
-const unwrap = (/** @type {any} */ entry) => {
+export interface SplitserList {
+  id: string;
+  name: string;
+  modified_at?: number;
+  updated_at?: number;
+}
+
+export interface MemberTotal {
+  member: { full_name: string };
+  balance_total: { currency: string; fractional: number };
+}
+
+export interface Collection<T> {
+  data: T[];
+  pagination?: { total_pages?: number };
+}
+
+export interface ListEntry {
+  list: SplitserList;
+}
+
+export interface ListBalance {
+  list: SplitserList;
+  data: MemberTotal[];
+  cached: boolean;
+}
+
+export interface Transaction {
+  type: string;
+  id: string | number;
+  [key: string]: unknown;
+}
+
+export interface ListTransactions {
+  list: SplitserList;
+  data: Transaction[];
+  fetchedAt: string;
+  cached: boolean;
+}
+
+interface Cached<T> {
+  value: T;
+  version: number;
+  expires: number;
+}
+
+type RequestOptions = {
+  method?: string;
+  authenticated?: boolean;
+  body?: string | undefined;
+  retried?: boolean;
+};
+
+const unwrap = (entry: Record<string, unknown>): Transaction | null => {
   const key = ['expense', 'income', 'payment', 'settle'].find(
-    (/** @type {any} */ name) => entry?.[name],
+    (name) => entry?.[name],
   );
-  return key ? { type: key, ...entry[key] } : null;
+  return key ? ({ type: key, ...(entry[key] as object) } as Transaction) : null;
 };
 
 const uuid =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const validPath =
   /^\/api\/(?:users\/sign_in|lists(?:\/[0-9a-f-]+\/(?:balance|list_items|settles))?)$/i;
-const finite = (/** @type {any} */ value) =>
-  Number.isFinite(value) ? value : 0;
+const finite = (value: unknown): number =>
+  typeof value === 'number' && Number.isFinite(value) ? value : 0;
+const listVersion = (list: SplitserList) =>
+  Math.max(finite(list.modified_at), finite(list.updated_at));
+
+export type SplitserClientConfig = SplitserConfig & { fetch?: typeof fetch };
 
 export class SplitserClient {
-  constructor(/** @type {any} */ config) {
+  config: SplitserConfig;
+  fetch: typeof fetch;
+  cookie: string | null = null;
+  loginPromise: Promise<void> | null = null;
+  listCache: { value: Collection<ListEntry>; expires: number } | null = null;
+  listPromise: Promise<Collection<ListEntry>> | null = null;
+  transactionCache = new Map<string, Cached<ListTransactions>>();
+  transactionPromises = new Map<string, Promise<ListTransactions>>();
+  balanceCache = new Map<string, Cached<ListBalance>>();
+  balancePromises = new Map<string, Promise<ListBalance>>();
+
+  constructor(config: Partial<SplitserClientConfig> & { baseUrl: string }) {
     const base = new URL(config.baseUrl);
     if (
       base.protocol !== 'https:' ||
@@ -38,24 +108,16 @@ export class SplitserClient {
         500,
       );
     }
-    this.config = config;
+    this.config = config as SplitserConfig;
     this.fetch = config.fetch || fetch;
-    this.cookie = null;
-    this.loginPromise = null;
-    this.listCache = null;
-    this.listPromise = null;
-    this.transactionCache = new Map();
-    this.transactionPromises = new Map();
-    this.balanceCache = new Map();
-    this.balancePromises = new Map();
   }
 
-  async cookieFromDisk() {
-    let contents;
+  async cookieFromDisk(): Promise<string | null> {
+    let contents: string;
     try {
       contents = await readFile(this.config.cookieFile, 'utf8');
-    } catch (/** @type {any} */ error) {
-      if (error.code === 'ENOENT') return null;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
       throw error;
     }
 
@@ -74,7 +136,7 @@ export class SplitserClient {
     return null;
   }
 
-  async login() {
+  async login(): Promise<void> {
     if (this.loginPromise) return this.loginPromise;
     this.loginPromise = (async () => {
       const { email, password } = this.config;
@@ -91,7 +153,7 @@ export class SplitserClient {
         body: JSON.stringify({ user: { email, password } }),
       });
       const values = response.headers.getSetCookie();
-      const session = values.find((/** @type {any} */ value) =>
+      const session = values.find((value) =>
         value.startsWith('_wbw_rails_session='),
       );
       if (!session)
@@ -100,7 +162,7 @@ export class SplitserClient {
           401,
         );
 
-      this.cookie = session.split(';', 1)[0];
+      this.cookie = session.split(';', 1)[0] ?? null;
       await this.saveCookies(values);
       this.listCache = null;
       this.transactionCache.clear();
@@ -112,20 +174,20 @@ export class SplitserClient {
     return this.loginPromise;
   }
 
-  async saveCookies(/** @type {string[]} */ values) {
+  async saveCookies(values: string[]): Promise<void> {
     const lines = [
       '# Netscape HTTP Cookie File',
       '# Generated by splitser-sync. Contains secrets; do not commit.',
     ];
     for (const value of values) {
-      const [pair, ...attributes] = value
+      const [pair = '', ...attributes] = value
         .split(';')
-        .map((/** @type {any} */ part) => part.trim());
+        .map((part) => part.trim());
       const separator = pair.indexOf('=');
       const name = pair.slice(0, separator);
       const content = pair.slice(separator + 1);
-      const options = Object.fromEntries(
-        attributes.map((/** @type {any} */ attribute) => {
+      const options: Record<string, string | true> = Object.fromEntries(
+        attributes.map((attribute): [string, string | true] => {
           const index = attribute.indexOf('=');
           return index < 0
             ? [attribute.toLowerCase(), true]
@@ -139,7 +201,9 @@ export class SplitserClient {
       const expires = options['max-age']
         ? Math.floor(Date.now() / 1000) + Number(options['max-age'])
         : Math.floor(
-            new Date(options.expires || Date.now() + 86400000).getTime() / 1000,
+            new Date(
+              (options.expires as string | undefined) ?? Date.now() + 86400000,
+            ).getTime() / 1000,
           );
       const domain = new URL(this.config.baseUrl).hostname;
       const httpOnly = options.httponly ? '#HttpOnly_' : '';
@@ -150,7 +214,7 @@ export class SplitserClient {
           options.path || '/',
           options.secure ? 'TRUE' : 'FALSE',
           expires,
-          /** @type {any} */ name,
+          name,
           content,
         ].join('\t'),
       );
@@ -164,16 +228,15 @@ export class SplitserClient {
     await rename(temporary, this.config.cookieFile);
   }
 
-  /** @returns {Promise<Response>} */
   async request(
-    /** @type {string} */ path,
-    /** @type {{method?: string, authenticated?: boolean, body?: string | undefined, retried?: boolean}} */ {
+    path: string,
+    {
       method = 'GET',
       authenticated = true,
       body,
       retried = false,
-    } = {},
-  ) {
+    }: RequestOptions = {},
+  ): Promise<Response> {
     const target = new URL(path, this.config.baseUrl);
     if (
       target.origin !== new URL(this.config.baseUrl).origin ||
@@ -188,8 +251,7 @@ export class SplitserClient {
       this.cookie = await this.cookieFromDisk();
     if (authenticated && !this.cookie) await this.login();
 
-    /** @type {Record<string, string>} */
-    const headers = {
+    const headers: Record<string, string> = {
       Accept: 'application/json',
       'Accept-Language': 'en',
       'Accept-Version': this.config.apiVersion,
@@ -198,17 +260,19 @@ export class SplitserClient {
     if (body) headers['Content-Type'] = 'application/json';
     if (authenticated && this.cookie) headers.Cookie = this.cookie;
 
-    let response;
+    let response: Response;
     try {
       response = await this.fetch(target, {
         method,
         headers,
-        body,
+        ...(body === undefined ? {} : { body }),
         redirect: 'manual',
         signal: AbortSignal.timeout(this.config.timeoutMs),
       });
-    } catch (/** @type {any} */ error) {
-      throw new SplitserError(`Could not reach Splitser: ${error.message}`);
+    } catch (error) {
+      throw new SplitserError(
+        `Could not reach Splitser: ${(error as Error).message}`,
+      );
     }
 
     if (
@@ -232,7 +296,7 @@ export class SplitserClient {
     return response;
   }
 
-  async json(/** @type {string} */ path, /** @type {any} */ options = {}) {
+  async json(path: string, options: RequestOptions = {}): Promise<any> {
     const response = await this.request(path, options);
     try {
       return await response.json();
@@ -241,13 +305,13 @@ export class SplitserClient {
     }
   }
 
-  async lists({ refresh = false } = {}) {
+  async lists({ refresh = false } = {}): Promise<Collection<ListEntry>> {
     if (!refresh && this.listCache && this.listCache.expires > Date.now()) {
       return this.listCache.value;
     }
     if (this.listPromise) return this.listPromise;
     this.listPromise = (async () => {
-      const body = await this.page('/api/lists', {
+      const body = await this.page<ListEntry>('/api/lists', {
         'filter[archived]': 'false',
       });
       this.listCache = {
@@ -261,19 +325,19 @@ export class SplitserClient {
     return this.listPromise;
   }
 
-  async page(
-    /** @type {string} */ path,
-    /** @type {Record<string, string>} */ filters = {},
-  ) {
-    const data = [];
+  async page<T>(
+    path: string,
+    filters: Record<string, string> = {},
+  ): Promise<Collection<T>> {
+    const data: T[] = [];
     let page = 0;
-    let metadata;
+    let metadata: Collection<T>;
     do {
       const url = new URL(path, this.config.baseUrl);
       url.searchParams.set('page', String(page));
       url.searchParams.set('per_page', '100');
-      for (const [key, /** @type {any} */ value] of Object.entries(filters))
-        url.searchParams.set(key, /** @type {any} */ value);
+      for (const [key, value] of Object.entries(filters))
+        url.searchParams.set(key, value);
       const body = await this.json(url.pathname + url.search);
       if (!Array.isArray(body.data))
         throw new SplitserError(`Invalid collection from ${path}`);
@@ -285,64 +349,68 @@ export class SplitserClient {
     } while (
       metadata.pagination &&
       Number.isInteger(metadata.pagination.total_pages) &&
-      metadata.pagination.total_pages >= 0 &&
-      page < metadata.pagination.total_pages
+      (metadata.pagination.total_pages as number) >= 0 &&
+      page < (metadata.pagination.total_pages as number)
     );
     return { ...metadata, data };
   }
 
-  // Net balances are one request per list; no transaction export is needed for reconciliation.
-  async balances(
-    /** @type {{listId?: string, refresh?: boolean}} */ {
-      listId,
-      refresh = false,
-    } = {},
-  ) {
+  private async selectLists(
+    listId: string | undefined,
+    refresh: boolean,
+  ): Promise<SplitserList[]> {
     const lists = await this.lists({ refresh });
     const selected = listId
-      ? lists.data.filter(
-          (/** @type {any} */ entry) => entry.list?.id === listId,
-        )
+      ? lists.data.filter((entry) => entry.list?.id === listId)
       : lists.data;
     if (listId && selected.length === 0)
       throw new SplitserError('Active Splitser list not found', 404);
+    return selected.map((entry) => entry.list);
+  }
+
+  // Net balances are one request per list; no transaction export is needed for reconciliation.
+  async balances({
+    listId,
+    refresh = false,
+  }: { listId?: string; refresh?: boolean } = {}): Promise<{
+    data: ListBalance[];
+    meta: { lists: number; cachedLists: number };
+  }> {
+    const selected = await this.selectLists(listId, refresh);
 
     const result = await Promise.all(
-      selected.map(async (/** @type {any} */ { list }) => {
+      selected.map(async (list): Promise<ListBalance> => {
         const cached = this.balanceCache.get(list.id);
         if (!uuid.test(list.id))
           throw new SplitserError('Invalid Splitser list ID');
-        const version = Math.max(
-          finite(list.modified_at),
-          finite(list.updated_at),
-        );
+        const version = listVersion(list);
         if (
           !refresh &&
           cached &&
           cached.version === version &&
           cached.expires > Date.now()
         ) {
-          return { ...cached./** @type {any} */ value, cached: true };
+          return { ...cached.value, cached: true };
         }
-        if (this.balancePromises.has(list.id))
-          return this.balancePromises.get(list.id);
+        const pending = this.balancePromises.get(list.id);
+        if (pending) return pending;
 
-        const promise = (async () => {
+        const promise = (async (): Promise<ListBalance> => {
           const body = await this.json(`/api/lists/${list.id}/balance`);
           if (!Array.isArray(body.balance?.member_totals)) {
             throw new SplitserError(
               `Invalid balance for Splitser list ${list.id}`,
             );
           }
-          const value = {
-            /** @type {any} */ list,
+          const value: ListBalance = {
+            list,
             data: body.balance.member_totals.map(
-              (/** @type {any} */ entry) => entry.member_total,
+              (entry: { member_total: MemberTotal }) => entry.member_total,
             ),
             cached: false,
           };
           this.balanceCache.set(list.id, {
-            /** @type {any} */ value,
+            value,
             version,
             expires: Date.now() + this.config.transactionTtlMs,
           });
@@ -357,69 +425,60 @@ export class SplitserClient {
       data: result,
       meta: {
         lists: result.length,
-        cachedLists: result.filter((/** @type {any} */ entry) => entry.cached)
-          .length,
+        cachedLists: result.filter((entry) => entry.cached).length,
       },
     };
   }
 
-  async transactions(
-    /** @type {{listId?: string, refresh?: boolean}} */ {
-      listId,
-      refresh = false,
-    } = {},
-  ) {
-    const lists = await this.lists({ refresh });
-    const selected = listId
-      ? lists.data.filter(
-          (/** @type {any} */ entry) => entry.list?.id === listId,
-        )
-      : lists.data;
-    if (listId && selected.length === 0)
-      throw new SplitserError('Active Splitser list not found', 404);
+  async transactions({
+    listId,
+    refresh = false,
+  }: { listId?: string; refresh?: boolean } = {}): Promise<{
+    data: ListTransactions[];
+    meta: { lists: number; transactions: number; cachedLists: number };
+  }> {
+    const selected = await this.selectLists(listId, refresh);
 
     const result = await Promise.all(
-      selected.map(async (/** @type {any} */ entry) => {
-        const list = entry.list;
+      selected.map(async (list): Promise<ListTransactions> => {
         const cached = this.transactionCache.get(list.id);
         if (!uuid.test(list.id))
           throw new SplitserError('Invalid Splitser list ID');
-        const version = Math.max(
-          finite(list.modified_at),
-          finite(list.updated_at),
-        );
+        const version = listVersion(list);
         if (
           !refresh &&
           cached &&
           cached.version === version &&
           cached.expires > Date.now()
         ) {
-          return { ...cached./** @type {any} */ value, cached: true };
+          return { ...cached.value, cached: true };
         }
-        if (this.transactionPromises.has(list.id))
-          return this.transactionPromises.get(list.id);
+        const pending = this.transactionPromises.get(list.id);
+        if (pending) return pending;
 
-        const promise = (async () => {
+        const promise = (async (): Promise<ListTransactions> => {
           const [items, settlements] = await Promise.all([
-            this.page(`/api/lists/${list.id}/list_items`),
-            this.page(`/api/lists/${list.id}/settles`),
+            this.page<Record<string, unknown>>(
+              `/api/lists/${list.id}/list_items`,
+            ),
+            this.page<Record<string, unknown>>(`/api/lists/${list.id}/settles`),
           ]);
-          const seen = new Set();
+          const seen = new Set<string>();
           const transactions = [...items.data, ...settlements.data]
             .map(unwrap)
-            .filter((item) => {
+            .filter((item): item is Transaction => {
               if (!item || seen.has(`${item.type}:${item.id}`)) return false;
               seen.add(`${item.type}:${item.id}`);
               return true;
             });
-          const value = {
-            /** @type {any} */ list,
+          const value: ListTransactions = {
+            list,
             data: transactions,
             fetchedAt: new Date().toISOString(),
             cached: false,
           };
           this.transactionCache.set(list.id, {
-            /** @type {any} */ value,
+            value,
             version,
             expires: Date.now() + this.config.transactionTtlMs,
           });
@@ -437,11 +496,10 @@ export class SplitserClient {
       meta: {
         lists: result.length,
         transactions: result.reduce(
-          (total, /** @type {any} */ entry) => total + entry.data.length,
+          (total, entry) => total + entry.data.length,
           0,
         ),
-        cachedLists: result.filter((/** @type {any} */ entry) => entry.cached)
-          .length,
+        cachedLists: result.filter((entry) => entry.cached).length,
       },
     };
   }

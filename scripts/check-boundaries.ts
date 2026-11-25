@@ -1,17 +1,17 @@
 import { readdir, readFile } from 'node:fs/promises';
 
-const owners = {
-  'node:fs/promises': ['client.js', 'config.js', 'actual.js'],
-  fetch: ['client.js'],
-  'api.addTransactions': ['reconcile.js'],
-  'api.updateTransaction': ['reconcile.js'],
-  'api.setBudgetAmount': ['reconcile.js'],
-  'api.runBankSync': ['reconcile.js'],
+const owners: Record<string, string[]> = {
+  'node:fs/promises': ['client.ts', 'config.ts', 'actual.ts'],
+  fetch: ['client.ts'],
+  'api.addTransactions': ['reconcile.ts'],
+  'api.updateTransaction': ['reconcile.ts'],
+  'api.setBudgetAmount': ['reconcile.ts'],
+  'api.runBankSync': ['reconcile.ts'],
 };
-const files = (await readdir('.')).filter((name) => name.endsWith('.js'));
-const failures = [];
+const files = (await readdir('src')).filter((name) => name.endsWith('.ts'));
+const failures: string[] = [];
 for (const file of files) {
-  const source = await readFile(file, 'utf8');
+  const source = await readFile(`src/${file}`, 'utf8');
   for (const [boundary, allowed] of Object.entries(owners)) {
     if (source.includes(boundary) && !allowed.includes(file)) {
       failures.push(`${file}: ${boundary} belongs to ${allowed.join(', ')}`);

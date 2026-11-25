@@ -3,11 +3,18 @@ import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { SplitserClient, SplitserError } from '../client.js';
+import { SplitserClient, SplitserError } from '../src/client.ts';
 
 const id = '123e4567-e89b-42d3-a456-426614174000';
-function setup(handler) {
-  const calls = [];
+type Call = { url: string; options?: RequestInit | undefined };
+function setup(
+  handler: (
+    url: URL,
+    options: RequestInit | undefined,
+    count: number,
+  ) => Response | Promise<Response>,
+) {
+  const calls: Call[] = [];
   const client = new SplitserClient({
     baseUrl: 'https://app.splitser.com',
     apiVersion: '11',
@@ -19,14 +26,14 @@ function setup(handler) {
     transactionTtlMs: 60000,
     fetch: async (url, options) => {
       calls.push({ url: String(url), options });
-      return handler(url, options, calls.length);
+      return handler(url as URL, options, calls.length);
     },
   });
   client.cookieFromDisk = async () => '_wbw_rails_session=existing';
   client.saveCookies = async () => {};
   return { client, calls };
 }
-const collection = (data, totalPages = 1) =>
+const collection = (data: unknown[], totalPages = 1) =>
   new Response(
     JSON.stringify({ data, pagination: { total_pages: totalPages } }),
     { status: 200 },
@@ -53,7 +60,7 @@ test('lists are paginated at 100 entries and cached', async () => {
   await client.lists();
   assert.equal(result.data.length, 2);
   assert.equal(calls.length, 2);
-  assert.equal(new URL(calls[0].url).searchParams.get('per_page'), '100');
+  assert.equal(new URL(calls[0]!.url).searchParams.get('per_page'), '100');
 });
 
 test('expired session refreshes once and retries without recursion', async () => {

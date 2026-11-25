@@ -1,20 +1,21 @@
 #!/usr/bin/env node
 import { mkdir, writeFile } from 'node:fs/promises';
-import { dirname, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import * as actualApi from '@actual-app/api';
-import { SplitserClient } from './client.js';
-import { loadEnv, splitserConfig } from './config.js';
-import { reconcileWithActual } from './reconcile.js';
+import { SplitserClient } from './client.ts';
+import type { MemberTotal, SplitserList } from './client.ts';
+import { loadEnv, projectRoot, splitserConfig } from './config.ts';
+import { reconcileWithActual } from './reconcile.ts';
+import type { ActualApi, ReconcilePlan, SplitserSource } from './reconcile.ts';
 
-const directory = dirname(fileURLToPath(import.meta.url));
-const eur = (/** @type {any} */ cents) => `€${(cents / 100).toFixed(2)}`;
-const fail = (/** @type {any} */ message) => {
+const eur = (cents: number) => `€${(cents / 100).toFixed(2)}`;
+const fail = (message: string): never => {
   throw new Error(message);
 };
 
-async function quiet(/** @type {any} */ fn) {
+async function quiet<T>(fn: () => Promise<T>): Promise<T> {
   const log = console.log;
   console.log = () => {};
   try {
@@ -24,64 +25,57 @@ async function quiet(/** @type {any} */ fn) {
   }
 }
 
-function localDate(/** @type {any} */ timeZone) {
+function localDate(timeZone: string): string {
   const parts = new Intl.DateTimeFormat('en-CA', {
-    /** @type {any} */ timeZone,
+    timeZone,
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
   }).formatToParts();
   const value = Object.fromEntries(
-    parts.map((/** @type {any} */ part) => [
-      part.type,
-      /** @type {any} */ part.value,
-    ]),
+    parts.map((part) => [part.type, part.value]),
   );
   return `${value.year}-${value.month}-${value.day}`;
 }
 
 export async function splitserBalance(
-  /** @type {any} */ client,
-  /** @type {any} */ memberName,
-) {
+  client: Pick<SplitserClient, 'balances'>,
+  memberName: string | undefined,
+): Promise<SplitserSource> {
   if (!memberName) fail('Set SPLITSER_MEMBER_NAME to your exact Splitser name');
   const response = await client.balances();
-  const lists = response.data.map((/** @type {any} */ entry) => {
-    const members = entry.data.filter(
-      (/** @type {any} */ member) =>
-        member.member.full_name === /** @type {any} */ memberName,
-    );
-    if (members.length !== 1) {
-      fail(
-        `${entry.list.name}: expected one member named ${JSON.stringify(memberName)}, found ${members.length}`,
+  const lists = response.data.map(
+    (entry: { list: SplitserList; data: MemberTotal[] }) => {
+      const members = entry.data.filter(
+        (member) => member.member.full_name === memberName,
       );
-    }
-    const member = members[0];
-    if (member.balance_total.currency !== 'EUR')
-      fail(`${entry.list.name}: expected EUR`);
-    return {
-      id: entry.list.id,
-      name: entry.list./** @type {any} */ name,
-      amount: member.balance_total.fractional,
-      sourceUpdatedAt: new Date(
-        Math.max(
-          entry.list.modified_at || 0,
-          /** @type {any} */ entry.list.updated_at || 0,
-        ) * 1000,
-      ).toISOString(),
-    };
-  });
+      if (members.length !== 1) {
+        fail(
+          `${entry.list.name}: expected one member named ${JSON.stringify(memberName)}, found ${members.length}`,
+        );
+      }
+      const member = members[0] as MemberTotal;
+      if (member.balance_total.currency !== 'EUR')
+        fail(`${entry.list.name}: expected EUR`);
+      return {
+        id: entry.list.id,
+        name: entry.list.name,
+        amount: member.balance_total.fractional,
+        sourceUpdatedAt: new Date(
+          Math.max(entry.list.modified_at || 0, entry.list.updated_at || 0) *
+            1000,
+        ).toISOString(),
+      };
+    },
+  );
   return {
-    /** @type {any} */ memberName,
-    amount: lists.reduce(
-      (/** @type {any} */ sum, /** @type {any} */ list) => sum + list.amount,
-      0,
-    ),
+    memberName: memberName as string,
+    amount: lists.reduce((sum, list) => sum + list.amount, 0),
     lists,
   };
 }
 
-async function eventually(/** @type {any} */ check) {
+async function eventually(check: () => Promise<boolean>): Promise<void> {
   for (let attempt = 0; attempt < 100; attempt++) {
     if (await check()) return;
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -89,10 +83,13 @@ async function eventually(/** @type {any} */ check) {
   fail('Actual write did not become visible within 10 seconds');
 }
 
-export async function reconcile({ apply = false, json = false } = {}) {
-  await loadEnv(directory);
+export async function reconcile({
+  apply = false,
+  json = false,
+} = {}): Promise<ReconcilePlan> {
+  await loadEnv(projectRoot);
   const source = await splitserBalance(
-    new SplitserClient(splitserConfig(directory)),
+    new SplitserClient(splitserConfig(projectRoot)),
     process.env.SPLITSER_MEMBER_NAME,
   );
   const accountName = process.env.ACTUAL_ACCOUNT || 'Splitser';
@@ -100,7 +97,7 @@ export async function reconcile({ apply = false, json = false } = {}) {
   const today = localDate(process.env.ACTUAL_TIMEZONE || 'Europe/Amsterdam');
   const month = today.slice(0, 7);
   const dataDir = resolve(
-    /** @type {any} */ directory,
+    projectRoot,
     process.env.ACTUAL_DATA_DIR || './.actual-data',
   );
   await mkdir(dataDir, { recursive: true, mode: 0o700 });
@@ -108,8 +105,7 @@ export async function reconcile({ apply = false, json = false } = {}) {
   const password = process.env.ACTUAL_PASSWORD;
   const syncId = process.env.ACTUAL_SYNC_ID;
   if (!serverURL || !password || !syncId) {
-    fail('Set ACTUAL_SERVER_URL, ACTUAL_PASSWORD, and ACTUAL_SYNC_ID');
-    process.exit(1);
+    return fail('Set ACTUAL_SERVER_URL, ACTUAL_PASSWORD, and ACTUAL_SYNC_ID');
   }
   await quiet(() =>
     actualApi.init({
@@ -125,13 +121,14 @@ export async function reconcile({ apply = false, json = false } = {}) {
       }),
     );
     const plan = await reconcileWithActual({
-      /** @type {any} */ source,
-      /** @type {any} */ apply,
+      source,
+      apply,
+      // The real API is a superset of the slice reconciliation uses.
       api: {
         ...actualApi,
         sync: () => quiet(() => actualApi.sync()),
         eventually,
-      },
+      } as unknown as ActualApi,
       config: {
         accountName,
         trackerName,
@@ -139,12 +136,12 @@ export async function reconcile({ apply = false, json = false } = {}) {
         month,
         bankNames: (process.env.ACTUAL_BANK_ACCOUNTS || '')
           .split(',')
-          .map((/** @type {any} */ name) => name.trim())
+          .map((name) => name.trim())
           .filter(Boolean),
         id: randomUUID,
       },
     });
-    Object.assign(plan, { date: today });
+    plan.date = today;
     if (json) console.log(JSON.stringify(plan, null, 2));
     else {
       console.log(
@@ -164,9 +161,9 @@ export async function reconcile({ apply = false, json = false } = {}) {
           : 'DRY RUN: no Actual changes. Re-run with --apply to write.',
       );
     }
-    if (/** @type {any} */ (plan).applied) {
+    if (plan.applied) {
       await writeFile(
-        resolve(/** @type {any} */ directory, 'reconciliation.json'),
+        resolve(projectRoot, 'reconciliation.json'),
         JSON.stringify(plan, null, 2) + '\n',
         { mode: 0o600 },
       );
@@ -189,7 +186,7 @@ if (
   reconcile({
     apply: args.includes('--apply'),
     json: args.includes('--json'),
-  }).catch((/** @type {any} */ error) => {
+  }).catch((error: Error) => {
     console.error(`FAILED: ${error.message}`);
     process.exitCode = 1;
   });

@@ -2,27 +2,36 @@
   "name": "splitser-sync",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
+  "packageManager": "pnpm@10.34.5",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.18"
   },
   "scripts": {
-    "start": "node server.js",
-    "reconcile": "node actual.js",
-    "test": "node --test",
-    "check": "npm run check:syntax && npm run typecheck && npm run lint && npm run format:check && npm test",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/server.js",
+    "dev": "node src/server.ts",
+    "reconcile": "node src/actual.ts",
+    "test": "node --test test/*.test.ts",
+    "check": "pnpm lint && pnpm format && pnpm test",
     "typecheck": "tsc",
-    "lint": "node scripts/check-boundaries.js",
-    "format": "prettier --write .",
-    "format:check": "prettier --check .",
-    "check:syntax": "node --check server.js && node --check client.js && node --check config.js && node --check http.js && node --check actual.js && node --check reconcile.js"
+    "lint": "pnpm typecheck && node scripts/check-boundaries.ts",
+    "format": "prettier --check .",
+    "format:write": "prettier --write .",
+    "lint:commits": "commitlint --from origin/main --to HEAD",
+    "prepare": "husky"
   },
   "dependencies": {
     "@actual-app/api": "26.11.0"
   },
   "devDependencies": {
+    "@commitlint/cli": "^20.0.0",
+    "@commitlint/config-conventional": "^20.0.0",
     "@types/node": "^24.19.4",
     "prettier": "^3.9.10",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.0.0"
   }
 }

@@ -1,19 +1,16 @@
 import http from 'node:http';
-import { dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { SplitserClient } from './client.js';
-import { loadEnv, splitserConfig } from './config.js';
-import { reconcile } from './actual.js';
-import { createHandler } from './http.js';
+import { SplitserClient } from './client.ts';
+import { loadEnv, projectRoot, splitserConfig } from './config.ts';
+import { reconcile } from './actual.ts';
+import { createHandler } from './http.ts';
 
-const directory = dirname(fileURLToPath(import.meta.url));
-await loadEnv(directory);
+await loadEnv(projectRoot);
 const host = process.env.HOST || '127.0.0.1';
 const port = Number(process.env.PORT || 8787);
 const handler = createHandler({
-  client: new SplitserClient(splitserConfig(directory)),
-  /** @type {any} */ reconcile,
-  env: process./** @type {any} */ env,
+  client: new SplitserClient(splitserConfig(projectRoot)),
+  reconcile,
+  env: process.env,
 });
 const server = http.createServer(handler);
 server.listen(port, host, () => {
@@ -26,7 +23,7 @@ server.listen(port, host, () => {
       );
     }
     const schedule = () =>
-      reconcile({ apply: true }).catch((/** @type {any} */ error) => {
+      reconcile({ apply: true }).catch((error: Error) => {
         console.error(`Scheduled reconciliation failed: ${error.message}`);
       });
     schedule();
