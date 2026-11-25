@@ -46,7 +46,7 @@ export async function reconcileWithActual({ source, apply, api, config }) {
       fail('Actual bank sync returned an invalid result');
     if (bankSync.newTransactions.length > 0) {
       fail(
-        `Bank sync imported ${bankSync.newTransactions.length} transaction(s); book them with book.mjs before reconciling`,
+        `Bank sync imported ${bankSync.newTransactions.length} transaction(s); book them in Actual before reconciling`,
       );
     }
     if (JSON.stringify(banksBefore) !== JSON.stringify(await snapshotBanks())) {

@@ -1,35 +1,132 @@
-# Splitser sync for Actual Budget
+# splitser-sync
 
-Read-only Splitser web API client plus an optional, opt-in balance reconciler for [Actual Budget](https://actualbudget.org/). No Chromium is needed. This project uses Splitser's private web API, which may change without notice.
+Keep your [Splitser](https://splitser.com) balance visible in [Actual Budget](https://actualbudget.org/).
 
-**For your own setup, start with the dry run. It never writes to Splitser, and it writes to Actual only when explicitly requested.**
+Splitser tracks who owes whom in shared expense lists. Actual doesn't know about it, so money you've fronted for friends (or owe them) never shows up in your budget. This tool reads your net balance across all active Splitser lists and mirrors it into Actual:
 
-## Local setup
-
-Requires Node.js 22 or newer. This checkout is pinned to Actual API 26.11.0; keep that version equal to your Actual server version.
-
-```sh
-cp .env.example .env
-# Fill in the Splitser and Actual settings in .env.
-npm ci
-npm run reconcile
-```
-
-The dry run reads your exact member balance from every active Splitser list and compares it with the named off-budget Actual account and tracker category. The invariant is:
+- an **off-budget account** (for example `Splitser`) holds the balance, positive when others owe you
+- a **tracker category** (for example `Advances`) holds the opposite amount, so your _To Budget_ number doesn't move
 
 ```text
 tracker category balance = -Splitser account balance
 ```
 
-After reviewing it, a one-time write is explicit:
+It never writes to Splitser. It writes to Actual only when you ask it to.
+
+> **Heads up:** this uses Splitser's private web API, which has no stability guarantee and may change without notice. It is a hobby tool, not an official integration.
+
+## How it works
+
+1. Logs in to Splitser (session cookie is cached and refreshed automatically) and fetches your balance for every active list.
+2. Opens your Actual budget through the official `@actual-app/api`.
+3. Compares the two and prints the correction it would make (a dry run).
+4. With `--apply`, adds or updates a single adjustment transaction in the off-budget account (`imported_id` `splitser:balance:current`) and shifts the tracker category's budget by the opposite amount.
+
+Safety checks before and after every write:
+
+- refuses to run if the tracker doesn't already equal minus the account (drift)
+- syncs your bank accounts first and stops if that imports new transactions, so you book those before reconciling
+- verifies both balances after writing
+- aborts if any bank account balance changed
+
+## Prerequisites
+
+- Node.js 22 or newer
+- A Splitser account (email and password login)
+- An Actual Budget server you can reach, with its budget's **Sync ID** (Settings → Advanced settings → Sync ID)
+- Actual server version matching the pinned API package, currently **26.11.0** (`@actual-app/api` in `package.json`). If your server is on a different version, change that dependency to match and run `npm install`.
+
+## Getting started
+
+### 1. Prepare Actual
+
+Create these once in Actual:
+
+1. **An off-budget account** named `Splitser`. Starting balance 0.
+2. **A category** named `Advances` (in any group) with **carryover enabled** (category menu → _Enable carryover_). The tracker must carry over, otherwise its balance resets each month.
+3. Know the names of your **on-budget bank accounts**. They are used as a tripwire: the tool refuses to write if their balances move.
+
+You can use other names; set them in `.env` below.
+
+### 2. Configure
+
+```sh
+git clone https://github.com/JustSamuel/splitser-sync.git
+cd splitser-sync
+cp .env.example .env
+npm ci
+```
+
+Edit `.env`. The settings you must fill in:
+
+| Variable                                    | What it is                                                                                     |
+| ------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `SPLITSER_EMAIL`, `SPLITSER_PASSWORD`       | Your Splitser login                                                                            |
+| `SPLITSER_MEMBER_NAME`                      | Your name exactly as it appears in your Splitser lists. Must match exactly one member per list |
+| `ACTUAL_SERVER_URL`                         | URL of your Actual server                                                                      |
+| `ACTUAL_PASSWORD`                           | Actual server password                                                                         |
+| `ACTUAL_SYNC_ID`                            | The budget's Sync ID                                                                           |
+| `ACTUAL_ENCRYPTION_PASSWORD`                | Only if the budget uses end-to-end encryption                                                  |
+| `ACTUAL_ACCOUNT`, `ACTUAL_TRACKER_CATEGORY` | Names from step 1 (defaults `Splitser`, `Advances`)                                            |
+| `ACTUAL_BANK_ACCOUNTS`                      | Comma-separated on-budget accounts, e.g. `Checking,Savings`. Required for `--apply`            |
+| `ACTUAL_TIMEZONE`                           | Used to date the adjustment (default `Europe/Amsterdam`)                                       |
+
+Everything else in `.env.example` is optional tuning (cache lifetimes, timeouts, API tokens, scheduling).
+
+Only EUR lists are supported; the tool stops with an error on any other currency.
+
+### 3. Dry run
+
+```sh
+npm run reconcile
+```
+
+Example output:
+
+```text
+Splitser (Your Name): €42.50 across 3 active lists
+  Ski trip: €30.00
+  Flat: €12.50
+  Dinner: €0.00
+Actual Splitser: €0.00; proposed correction: €42.50
+Advances 2026-11: €0.00 -> €-42.50
+DRY RUN: no Actual changes. Re-run with --apply to write.
+```
+
+If it can't find your member name, account or category, the error says which one.
+
+### 4. Apply once
 
 ```sh
 npm run reconcile -- --apply
 ```
 
-Every apply first syncs the linked ING accounts through Actual. If it imports new transactions or bank balances change, reconciliation stops so the normal bookkeeping workflow can book them first. This adds one off-budget adjustment with the stable `imported_id` `splitser:balance:current`, or updates the existing adjustment on later runs. It also adjusts the current month's tracker budget by the opposite amount. Existing bank-imported settlements and their transfers are left alone. The command refuses pre-existing tracker drift, verifies both balances after writing, and checks that bank-synced account balances did not change.
+Check Actual: the `Splitser` account should now equal your Splitser balance, `Advances` its negative, and your bank accounts and _To Budget_ unchanged. Re-running is safe; it updates the same adjustment rather than adding new ones.
 
-## API
+When a Splitser settlement lands in your bank account, book it in Actual as a transfer to the `Splitser` account as usual. The next run reconciles the remainder.
+
+Add `--json` to either command for machine-readable output. After a successful apply, `reconciliation.json` (git-ignored) holds the last report.
+
+## Running it automatically
+
+### As a service (Docker / Coolify)
+
+```sh
+docker compose up -d --build
+```
+
+The container serves a small HTTP API and can reconcile on a timer. Put the settings from `.env` into your platform's secret store rather than committing them. The `splitser-data` volume keeps the refreshed Splitser session and Actual's local cache. The published port is bound to localhost; adjust it if you front the service with a reverse proxy.
+
+To reconcile on a schedule, set:
+
+```text
+ALLOW_ACTUAL_WRITES=true
+RECONCILE_INTERVAL_MINUTES=60
+```
+
+It then reconciles at startup and at that interval. Only turn this on after a dry run and a reviewed one-time `--apply` have both worked.
+
+### HTTP API
 
 ```sh
 npm start
@@ -39,31 +136,40 @@ curl http://127.0.0.1:8787/balances
 curl 'http://127.0.0.1:8787/transactions?list_id=LIST_UUID'
 ```
 
-Transactions include expenses, income, and settlements, deduplicated by `type:id`. Balances are the lean reconciliation source: one request per list rather than downloading full histories. List metadata is cached for 60 seconds and balances/transactions for 5 minutes, with cache invalidation based on Splitser's list timestamps. Concurrent requests share in-flight calls. `?refresh=1` bypasses caches.
+- `/transactions` returns expenses, income and settlements, deduplicated by `type:id`.
+- List metadata is cached for 60 s, balances and transactions for 5 min. `?refresh=1` bypasses the cache.
+- Set `API_TOKEN` to require `Authorization: Bearer <token>` on everything except `/health`. Without it, bind only to localhost or a private network.
 
-A saved session is used until rejected or expired, then the client signs in with `SPLITSER_EMAIL` and `SPLITSER_PASSWORD`, saves the replacement cookie atomically, and retries once. Concurrent logins are shared.
-
-For a public Coolify deployment, set `API_TOKEN` to a long random token; all non-health endpoints then require `Authorization: Bearer <token>`. Without it, bind the API only to localhost or a private network.
-
-## Actual reconciliation endpoint
-
-Set a separate random `RECONCILE_TOKEN`, then:
+Trigger a reconcile over HTTP with a separate `RECONCILE_TOKEN`:
 
 ```sh
-curl -X POST -H "Authorization: Bearer $RECONCILE_TOKEN" \
-  http://127.0.0.1:8787/reconcile
+curl -X POST -H "Authorization: Bearer $RECONCILE_TOKEN" http://127.0.0.1:8787/reconcile
 ```
 
-This is still a dry run. To allow `?apply=true`, explicitly set `ALLOW_ACTUAL_WRITES=true`. Overlapping runs return HTTP 409.
+That is a dry run unless you add `?apply=true` _and_ have set `ALLOW_ACTUAL_WRITES=true`. Overlapping runs get HTTP 409.
 
-For automatic reconciliation in Coolify, set `RECONCILE_INTERVAL_MINUTES=60` (or your preferred interval) and `ALLOW_ACTUAL_WRITES=true`. The service reconciles on startup and at that interval. Do not schedule it until a manual dry run and a reviewed one-time apply have succeeded.
+## Security notes
 
-## Coolify / Docker
+- `.env`, the cookie file, the Actual cache and `reconciliation.json` are git-ignored and excluded from the Docker build context. Never commit them.
+- Use long random values for `API_TOKEN` and `RECONCILE_TOKEN`, and don't expose the API publicly without a token.
+- Credentials never appear in logs; `npm run lint` fails on code that logs them.
 
-Deploy this directory as a Docker Compose application. Configure secrets in Coolify rather than committing `.env`. The `splitser-data` volume stores the refreshed session and Actual's local budget cache. The Compose port is localhost-only; remove or adjust it when using Coolify's private network or authenticated reverse proxy.
+## Troubleshooting
 
-`.env`, cookies, the local Actual cache, and reconciliation reports are ignored by Git and excluded from Docker build context.
+| Message                                                | Fix                                                                                  |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------ |
+| `Actual needs an off-budget account named ...`         | Create it, or set `ACTUAL_ACCOUNT`. It must be marked off-budget                     |
+| `... must have carryover enabled`                      | Enable carryover on the tracker category                                             |
+| `... does not equal minus ...; fix the existing drift` | The account and tracker disagree. Correct that in Actual first                       |
+| `Bank sync imported N transaction(s); book them ...`   | Categorize the newly imported bank transactions in Actual, then run again            |
+| `expected one member named ...`                        | Fix `SPLITSER_MEMBER_NAME` to match your name in that list exactly                   |
+| Login or API errors from Splitser                      | Check credentials; the private API may have changed (`SPLITSER_API_VERSION`)         |
+| Errors opening the budget                              | Check the Sync ID, and that the server version matches the `@actual-app/api` version |
 
-## GitHub preparation
+## Development
 
-This directory is self-contained and can be moved to its own repository. Before publishing, create a fresh repository with no inherited Git history, verify the ignore rules, and rotate any credentials or cookies previously pasted into chat or shell commands. This first version is tailored to a single Splitser member, one off-budget account, and one carryover tracker category; those are configurable through `.env`.
+```sh
+npm run check
+```
+
+runs syntax checks, strict typechecking, boundary lint, formatting and tests. Tests use fake backends and need no credentials. See [AGENTS.md](AGENTS.md) for the module layout.

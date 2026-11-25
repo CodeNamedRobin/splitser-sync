@@ -116,7 +116,7 @@ test('bank sync must return new transaction metadata', async () => {
 
 test('bank sync stops on unbooked imported transactions', async () => {
   const backend = fake({ bankResult: { newTransactions: ['imported'] } });
-  await assert.rejects(run(backend), /book them with book.mjs/);
+  await assert.rejects(run(backend), /book them in Actual/);
   assert.deepEqual(backend.calls, ['bank-sync']);
 });
 
