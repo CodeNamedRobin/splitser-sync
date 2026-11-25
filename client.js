@@ -13,9 +13,18 @@ const unwrap = (entry) => {
   return key ? { type: key, ...entry[key] } : null;
 };
 
+const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const validPath = /^\/api\/(?:users\/sign_in|lists(?:\/[0-9a-f-]+\/(?:balance|list_items|settles))?)$/i;
+const finite = (value) => Number.isFinite(value) ? value : 0;
+
 export class SplitserClient {
   constructor(config) {
+    const base = new URL(config.baseUrl);
+    if (base.protocol !== 'https:' || base.username || base.password || base.pathname !== '/' || base.search || base.hash) {
+      throw new SplitserError('SPLITSER_BASE_URL must be an HTTPS origin without credentials', 500);
+    }
     this.config = config;
+    this.fetch = config.fetch || fetch;
     this.cookie = null;
     this.loginPromise = null;
     this.listCache = null;
@@ -110,6 +119,10 @@ export class SplitserClient {
   }
 
   async request(path, { method = 'GET', authenticated = true, body, retried = false } = {}) {
+    const target = new URL(path, this.config.baseUrl);
+    if (target.origin !== new URL(this.config.baseUrl).origin || !validPath.test(target.pathname)) {
+      throw new SplitserError('Refusing an unapproved Splitser API request', 500);
+    }
     if (authenticated && !this.cookie) this.cookie = await this.cookieFromDisk();
     if (authenticated && !this.cookie) await this.login();
 
@@ -124,7 +137,7 @@ export class SplitserClient {
 
     let response;
     try {
-      response = await fetch(new URL(path, this.config.baseUrl), {
+      response = await this.fetch(target, {
         method, headers, body, redirect: 'manual',
         signal: AbortSignal.timeout(this.config.timeoutMs),
       });
@@ -186,7 +199,9 @@ export class SplitserClient {
       data.push(...body.data);
       metadata = body;
       page += 1;
-    } while (metadata.pagination && page < metadata.pagination.total_pages);
+      if (page > 1000) throw new SplitserError(`Pagination limit exceeded for ${path}`);
+    } while (metadata.pagination && Number.isInteger(metadata.pagination.total_pages) &&
+        metadata.pagination.total_pages >= 0 && page < metadata.pagination.total_pages);
     return { ...metadata, data };
   }
 
@@ -198,7 +213,8 @@ export class SplitserClient {
 
     const result = await Promise.all(selected.map(async ({ list }) => {
       const cached = this.balanceCache.get(list.id);
-      const version = Math.max(list.modified_at || 0, list.updated_at || 0);
+      if (!uuid.test(list.id)) throw new SplitserError('Invalid Splitser list ID');
+      const version = Math.max(finite(list.modified_at), finite(list.updated_at));
       if (!refresh && cached && cached.version === version && cached.expires > Date.now()) {
         return { ...cached.value, cached: true };
       }
@@ -233,7 +249,8 @@ export class SplitserClient {
     const result = await Promise.all(selected.map(async (entry) => {
       const list = entry.list;
       const cached = this.transactionCache.get(list.id);
-      const version = Math.max(list.modified_at || 0, list.updated_at || 0);
+      if (!uuid.test(list.id)) throw new SplitserError('Invalid Splitser list ID');
+      const version = Math.max(finite(list.modified_at), finite(list.updated_at));
       if (!refresh && cached && cached.version === version && cached.expires > Date.now()) {
         return { ...cached.value, cached: true };
       }
