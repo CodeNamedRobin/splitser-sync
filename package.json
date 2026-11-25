@@ -1,0 +1,16 @@
+{
+  "name": "splitser-sync",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "reconcile": "node actual.js"
+  },
+  "dependencies": {
+    "@actual-app/api": "26.11.0"
+  }
+}

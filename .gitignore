@@ -1,0 +1,5 @@
+.env
+cookies.txt
+.actual-data/
+reconciliation.json
+node_modules/
