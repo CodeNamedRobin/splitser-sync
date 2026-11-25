@@ -1,0 +1,15 @@
+services:
+  splitser-api:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      HOST: 0.0.0.0
+      COOKIE_FILE: /data/cookies.txt
+    volumes:
+      - splitser-data:/data
+    ports:
+      - "127.0.0.1:8787:8787"
+
+volumes:
+  splitser-data:
