@@ -10,10 +10,19 @@
     "start": "node server.js",
     "reconcile": "node actual.js",
     "test": "node --test",
-    "check": "npm run check:syntax && npm test",
+    "check": "npm run check:syntax && npm run typecheck && npm run lint && npm run format:check && npm test",
+    "typecheck": "tsc",
+    "lint": "node scripts/check-boundaries.js",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "check:syntax": "node --check server.js && node --check client.js && node --check config.js && node --check http.js && node --check actual.js && node --check reconcile.js"
   },
   "dependencies": {
     "@actual-app/api": "26.11.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.4",
+    "prettier": "^3.9.10",
+    "typescript": "^5.9.3"
   }
 }

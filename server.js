@@ -11,7 +11,9 @@ await loadEnv(directory);
 const host = process.env.HOST || '127.0.0.1';
 const port = Number(process.env.PORT || 8787);
 const handler = createHandler({
-  client: new SplitserClient(splitserConfig(directory)), reconcile, env: process.env,
+  client: new SplitserClient(splitserConfig(directory)),
+  /** @type {any} */ reconcile,
+  env: process./** @type {any} */ env,
 });
 const server = http.createServer(handler);
 server.listen(port, host, () => {
@@ -19,11 +21,14 @@ server.listen(port, host, () => {
   const interval = Number(process.env.RECONCILE_INTERVAL_MINUTES || 0);
   if (interval > 0) {
     if (process.env.ALLOW_ACTUAL_WRITES !== 'true') {
-      throw new Error('Scheduled reconciliation requires ALLOW_ACTUAL_WRITES=true');
+      throw new Error(
+        'Scheduled reconciliation requires ALLOW_ACTUAL_WRITES=true',
+      );
     }
-    const schedule = () => reconcile({ apply: true }).catch((error) => {
-      console.error(`Scheduled reconciliation failed: ${error.message}`);
-    });
+    const schedule = () =>
+      reconcile({ apply: true }).catch((/** @type {any} */ error) => {
+        console.error(`Scheduled reconciliation failed: ${error.message}`);
+      });
     schedule();
     setInterval(schedule, interval * 60000).unref();
   }

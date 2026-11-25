@@ -11,12 +11,14 @@
 ## Layer 1: architecture and APIs
 
 Present:
+
 - `client.js` owns Splitser network calls, login, cookies, and caching.
 - `server.js` owns inbound HTTP and bearer-token checks.
 - `actual.js` owns Actual initialization and writes.
 - `config.js` owns `.env` parsing.
 
 Missing:
+
 - No schema/runtime validation for external Splitser responses or configuration.
 - Secrets and external data are plain strings/objects throughout.
 - External request targets are partly derived from API data (`list.id`) without a common allowlist/schema.
@@ -32,11 +34,13 @@ Missing: all automated checks and CI jobs listed above. No contract tests, fake 
 ## Layer 3: runtime and invariants
 
 Present:
+
 - Explicit off-budget account, tracker carryover, duplicate adjustment, and post-write checks.
 - Bank sync before apply; stops for imported transactions or changed transaction-derived balances.
 - Stable `splitser:balance:current` imported ID; sequential reconciliation requests.
 
 Missing or defective:
+
 - A zero Splitser/account delta skips the tracker-drift check, so an already broken tracker can be reported as healthy.
 - `getAccountBalance` is transaction-derived; it does not prove the bank-reported balance is unchanged. Account metadata timestamps must also be checked.
 - No validation that bank sync returned the expected structure.
